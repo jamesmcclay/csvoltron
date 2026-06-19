@@ -50,6 +50,15 @@ func run(startURL, outDir, domainFilter, profileDir, doneFile string) error {
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return fmt.Errorf("create profile dir: %w", err)
 	}
+	// Chrome on Windows refuses to enable remote debugging on a relative
+	// --user-data-dir, silently disabling it instead (it logs "DevTools
+	// remote debugging requires a non-default data directory" and chromedp
+	// then times out waiting for a websocket URL that never gets printed).
+	absProfileDir, err := filepath.Abs(profileDir)
+	if err != nil {
+		return fmt.Errorf("resolve profile dir: %w", err)
+	}
+	profileDir = absProfileDir
 	// Stale DONE file from a previous run would cause an immediate exit.
 	os.Remove(doneFile)
 
@@ -109,7 +118,7 @@ func run(startURL, outDir, domainFilter, profileDir, doneFile string) error {
 	cookieCtx, cancelCookies := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelCookies()
 	var cookies []*network.Cookie
-	err := chromedp.Run(cookieCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	err = chromedp.Run(cookieCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		var err error
 		// storage.GetCookies (not network.GetCookies) returns every cookie
 		// in the browser context, not just ones visible to whichever page

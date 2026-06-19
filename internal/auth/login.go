@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -38,6 +39,15 @@ func Login(ctx context.Context, startURL, profileDir string, timeout time.Durati
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return Credentials{}, fmt.Errorf("create profile dir: %w", err)
 	}
+	// Chrome on Windows refuses to enable remote debugging on a relative
+	// --user-data-dir, silently disabling it instead (it logs "DevTools
+	// remote debugging requires a non-default data directory" and chromedp
+	// then times out waiting for a websocket URL that never gets printed).
+	absProfileDir, err := filepath.Abs(profileDir)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("resolve profile dir: %w", err)
+	}
+	profileDir = absProfileDir
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false),
