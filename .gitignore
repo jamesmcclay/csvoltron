@@ -1,0 +1,17 @@
+# Build artifacts
+/bin/
+*.exe
+
+# Generated output
+/csv_output/
+/capture-output/
+
+# Persistent Chrome profiles (login sessions live here -- never commit)
+/.csvoltron-chrome-profile/
+/*chrome-profile*/
+
+# Local tool/editor settings
+/.claude/
+
+# OS cruft
+.DS_Store

@@ -1,0 +1,151 @@
+// Package auth drives a real, visible Chrome window so a human can complete
+// Strata Cloud Manager's SSO + MFA login by hand, then extracts the
+// short-lived bearer JWT (and tenant-specific API host) that the SCM web
+// app itself uses to call its internal Optimize API. See internal/scm for
+// what that API looks like.
+package auth
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"regexp"
+	"sync"
+	"time"
+
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
+)
+
+// Credentials is what's needed to call the Optimize API directly.
+type Credentials struct {
+	Host string // e.g. "paas-16.prod.panorama.paloaltonetworks.com"
+	JWT  string // value of the x-auth-jwt header
+}
+
+// apiHostPattern matches the SCM backend API calls we want to piggyback
+// on -- any call to a tenant's Panorama-as-a-Service host's config API.
+var apiHostPattern = regexp.MustCompile(`^https://([^/]+)/api/config/v9\.2/`)
+
+// Login opens a visible Chrome window at startURL, waits for the user to
+// complete SSO + MFA and reach the Optimize page by hand, and returns as
+// soon as it observes an authenticated API call -- at which point it has
+// everything needed to call the API directly and closes the browser. It
+// gives up after timeout if no such call is seen (e.g. the user didn't
+// reach the Optimize page, or PAN changed the API).
+func Login(ctx context.Context, startURL, profileDir string, timeout time.Duration) (Credentials, error) {
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		return Credentials{}, fmt.Errorf("create profile dir: %w", err)
+	}
+
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", false),
+		chromedp.UserDataDir(profileDir),
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
+	defer cancelAlloc()
+
+	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
+	defer cancelBrowser()
+
+	found := make(chan Credentials, 1)
+	var once sync.Once
+	report := func(c Credentials) { once.Do(func() { found <- c }) }
+
+	watch := func(watchCtx context.Context) {
+		chromedp.ListenTarget(watchCtx, func(ev interface{}) {
+			req, ok := ev.(*network.EventRequestWillBeSent)
+			if !ok {
+				return
+			}
+			m := apiHostPattern.FindStringSubmatch(req.Request.URL)
+			if m == nil {
+				return
+			}
+			jwt, ok := req.Request.Headers["x-auth-jwt"].(string)
+			if !ok || jwt == "" {
+				return
+			}
+			report(Credentials{Host: m[1], JWT: jwt})
+		})
+	}
+
+	if err := chromedp.Run(browserCtx,
+		network.Enable(),
+		chromedp.ActionFunc(func(c context.Context) error {
+			watch(c)
+			return nil
+		}),
+		chromedp.Navigate(startURL),
+	); err != nil {
+		return Credentials{}, fmt.Errorf("launch/navigate: %w", err)
+	}
+
+	// SSO/MFA flows sometimes pop up a separate window for the credential
+	// prompt rather than redirecting the original tab. Watch any such
+	// new tab too, in case the user ends up browsing the Optimize page
+	// there instead of the original tab.
+	watchNewTabs(browserCtx, watch)
+
+	fmt.Println("A Chrome window has opened.")
+	fmt.Println("1. Complete SSO login + MFA by hand.")
+	fmt.Println("2. Navigate to the Optimize page if you're not redirected there automatically:")
+	fmt.Println("   " + startURL)
+	fmt.Println("(This will be detected automatically -- no need to press Enter.)")
+
+	select {
+	case creds := <-found:
+		fmt.Println("Authenticated session detected, closing browser.")
+		return creds, nil
+	case <-time.After(timeout):
+		return Credentials{}, fmt.Errorf("timed out after %s waiting for an authenticated Optimize API call; did you reach the Optimize page?", timeout)
+	case <-ctx.Done():
+		return Credentials{}, ctx.Err()
+	}
+}
+
+// watchNewTabs calls watch(subCtx) for every new top-level "page" target
+// (tab/popup) created for the lifetime of browserCtx.
+func watchNewTabs(browserCtx context.Context, watch func(context.Context)) {
+	initialID := chromedp.FromContext(browserCtx).Target.TargetID
+
+	var mu sync.Mutex
+	seen := map[target.ID]bool{initialID: true}
+
+	chromedp.ListenBrowser(browserCtx, func(ev interface{}) {
+		var info *target.Info
+		switch e := ev.(type) {
+		case *target.EventTargetCreated:
+			info = e.TargetInfo
+		case *target.EventTargetInfoChanged:
+			info = e.TargetInfo
+		default:
+			return
+		}
+		if info.Type != "page" {
+			return
+		}
+
+		mu.Lock()
+		already := seen[info.TargetID]
+		seen[info.TargetID] = true
+		mu.Unlock()
+		if already {
+			return
+		}
+
+		go func(id target.ID) {
+			// subCtx is intentionally long-lived (tied to browserCtx, not a
+			// short timeout): ListenTarget stops delivering events as soon
+			// as its context is cancelled.
+			subCtx, _ := chromedp.NewContext(browserCtx, chromedp.WithTargetID(id))
+			if err := chromedp.Run(subCtx, chromedp.ActionFunc(func(c context.Context) error {
+				watch(c)
+				return nil
+			})); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: failed to watch new tab/popup", id, ":", err)
+			}
+		}(info.TargetID)
+	})
+}
