@@ -19,17 +19,20 @@ You don't need Go installed. You don't even need `git`. Open **PowerShell**
 and paste this:
 
 ```powershell
-mkdir csvoltron-run -Force | Out-Null; cd csvoltron-run
+$root = Join-Path $env:USERPROFILE "csvoltron-run"
+mkdir $root -Force | Out-Null
+Set-Location $root
 
 if (!(Test-Path .\go\bin\go.exe)) {
-  $v = (Invoke-WebRequest "https://go.dev/VERSION?m=text" -UseBasicParsing).Content.Split("`n")[0]
+  $v = (Invoke-WebRequest "https://go.dev/VERSION?m=text" -UseBasicParsing).Content.Split("`n")[0].Trim()
   Invoke-WebRequest "https://go.dev/dl/$v.windows-amd64.zip" -OutFile go.zip
   Expand-Archive go.zip . -Force
 }
 
+Remove-Item csvoltron-main -Recurse -Force -ErrorAction Ignore
 Invoke-WebRequest "https://github.com/jamesmcclay/csvoltron/archive/refs/heads/main.zip" -OutFile repo.zip
-Expand-Archive repo.zip . -Force -ErrorAction SilentlyContinue
-cd csvoltron-main
+Expand-Archive repo.zip . -Force
+Set-Location csvoltron-main
 
 ..\go\bin\go.exe run .
 ```
