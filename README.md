@@ -108,3 +108,8 @@ go run ./cmd/discover
 This talks to an internal, undocumented API that the SCM web UI itself
 uses — not a published/supported one. If Palo Alto Networks changes it,
 `csvoltron` may need a tune-up. PRs welcome. 🛠️
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
