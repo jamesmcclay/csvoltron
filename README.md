@@ -108,7 +108,7 @@ go run ./cmd/discover
 
 ## Disclaimer
 
-This talks to an internal, undocumented API that the SCM web UI itself
+This talks to an internal, unofficial/undocumented API that the SCM web UI itself
 uses — not a published/supported one. If Palo Alto Networks changes it,
 `csvoltron` may need a tune-up. PRs welcome. 🛠️
 
