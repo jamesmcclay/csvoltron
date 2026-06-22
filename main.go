@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/jamesmcclay/csvoltron/internal/auth"
@@ -26,12 +27,31 @@ func main() {
 
 	chromeExecPath := ""
 	if *portable {
-		chromeExecPath = filepath.Join("..", "chromium", "chrome-win", "chrome.exe")
+		var err error
+		chromeExecPath, err = portableChromePath()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	}
 
 	if err := run(*startURL, *outDir, *profileDir, chromeExecPath, *loginTimeout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+}
+
+// portableChromePath returns the path to the portable Chromium binary
+// downloaded by the installer (see README), a sibling of the repo checkout
+// that go run . is invoked from.
+func portableChromePath() (string, error) {
+	switch runtime.GOOS {
+	case "windows":
+		return filepath.Join("..", "chromium", "chrome-win", "chrome.exe"), nil
+	case "darwin":
+		return filepath.Join("..", "chromium", "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"), nil
+	default:
+		return "", fmt.Errorf("-portable isn't supported on %s yet", runtime.GOOS)
 	}
 }
 

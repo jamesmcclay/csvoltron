@@ -97,6 +97,36 @@ cd csvoltron
 go run .
 ```
 
+### Locked-down corporate Chrome (macOS)
+
+If `csvoltron` fails with `... DevTools remote debugging is disallowed by
+the system admin`, or just hangs and times out waiting for a websocket URL,
+your company's Chrome policy blocks the automation csvoltron needs. Use
+this instead -- it downloads a portable, unmanaged Chromium as a sibling of
+your checkout and runs with `-portable`:
+
+```sh
+mkdir -p ~/csvoltron-run && cd ~/csvoltron-run
+
+if [ ! -x chromium/chrome-mac/Chromium.app/Contents/MacOS/Chromium ]; then
+  bucket=Mac; [ "$(uname -m)" = "arm64" ] && bucket=Mac_Arm
+  rev=$(curl -fsSL "https://commondatastorage.googleapis.com/chromium-browser-snapshots/$bucket/LAST_CHANGE")
+  curl -fsSL "https://commondatastorage.googleapis.com/chromium-browser-snapshots/$bucket/$rev/chrome-mac.zip" -o chromium.zip
+  mkdir -p chromium && unzip -q -o chromium.zip -d chromium && rm chromium.zip
+  xattr -dr com.apple.quarantine chromium/chrome-mac/Chromium.app
+fi
+
+rm -rf csvoltron
+git clone https://github.com/jamesmcclay/csvoltron.git
+cd csvoltron
+
+go run . -portable
+```
+
+Run the same block again any time you want a fresh export -- the Chromium
+download is cached after the first run. (Linux isn't supported by
+`-portable` yet.)
+
 ## What you get
 
 After a run, look in `csv_output/` for:
@@ -122,7 +152,7 @@ go run . -out-dir ./csv_output -login-timeout 5m
 | `-start-url` | the Optimize page | Where the browser opens first |
 | `-profile-dir` | `./.csvoltron-chrome-profile` | Persistent Chrome profile, so you don't have to redo MFA every single run |
 | `-login-timeout` | `5m` | How long to wait for you to finish logging in before giving up |
-| `-portable` | `false` | Use the portable Chromium at `../chromium/chrome-win/chrome.exe` instead of system Chrome (see [Locked-down corporate Chrome](#locked-down-corporate-chrome-eg-palo-alto-networks-managed-laptops)) |
+| `-portable` | `false` | Use the portable Chromium downloaded by the installer instead of system Chrome -- see "Locked-down corporate Chrome" under your OS's quick start above |
 
 ## How it actually works (the fun part)
 

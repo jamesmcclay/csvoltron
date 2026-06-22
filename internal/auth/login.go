@@ -55,14 +55,8 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false),
-		// Without this, Chrome's BackgroundModeManager can keep a process
-		// alive (e.g. as a macOS background/tray process) after the window
-		// closes, even after a graceful CDP close. That leftover process
-		// keeps holding profileDir's SingletonLock, so the *next* run's
-		// Chrome silently hands off to it instead of starting fresh --
-		// chromedp then times out waiting for a websocket URL that the
-		// already-running process never prints ("websocket url timeout
-		// reached").
+		// Stops Chrome from keeping a process alive in the background (e.g.
+		// as a macOS menu-bar/tray process) after its window closes.
 		chromedp.Flag("disable-background-mode", true),
 		chromedp.UserDataDir(profileDir),
 	)
@@ -72,10 +66,6 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 		}
 		allocOpts = append(allocOpts, chromedp.ExecPath(chromeExecPath))
 	}
-	// TODO(temporary): forward Chrome's own stdout/stderr so we can see what
-	// it prints (if anything) during the "websocket url timeout reached"
-	// failure on reused profile dirs. Remove once that's diagnosed.
-	allocOpts = append(allocOpts, chromedp.CombinedOutput(os.Stderr))
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
 	defer cancelAlloc()
 
@@ -143,11 +133,8 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 
 // closeGracefully asks Chrome to quit via the CDP Browser.close command
 // instead of leaving it to the deferred context cancellation, which kills
-// the process outright (SIGKILL) and can leave stale SingletonLock /
-// SingletonSocket files in profileDir on macOS/Linux. A stale lock makes
-// the *next* run's Chrome hang trying to hand off to the (now-dead) old
-// process instead of starting fresh, which chromedp sees as "websocket url
-// timeout reached".
+// the process outright (SIGKILL) rather than letting it shut down and clean
+// up after itself normally.
 func closeGracefully(browserCtx context.Context) {
 	if err := chromedp.Cancel(browserCtx); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: failed to gracefully close browser:", err)
