@@ -51,6 +51,44 @@ Go download (already cached) and re-fetch just the repo and your data.
 network access to both `go.dev`/`github.com` and your Strata Cloud Manager
 tenant.
 
+### Locked-down corporate Chrome
+
+If `csvoltron` fails with `chrome failed to start: ... DevTools remote
+debugging is disallowed by the system admin`, your company's Chrome policy
+blocks the automation csvoltron needs. Use this installer instead -- it also
+downloads a portable, unmanaged Chromium that isn't subject to that policy:
+
+```powershell
+$root = Join-Path $env:USERPROFILE "csvoltron-run"
+mkdir $root -Force | Out-Null
+Set-Location $root
+
+if (!(Test-Path .\go\bin\go.exe)) {
+  $v = (Invoke-WebRequest "https://go.dev/VERSION?m=text" -UseBasicParsing).Content.Split("`n")[0].Trim()
+  curl.exe -L "https://go.dev/dl/$v.windows-amd64.zip" -o go.zip
+  Expand-Archive go.zip . -Force
+}
+
+if (!(Test-Path .\chromium\chrome-win\chrome.exe)) {
+  $rev = (Invoke-WebRequest "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Win_x64/LAST_CHANGE" -UseBasicParsing).Content.Trim()
+  curl.exe -L "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Win_x64/$rev/chrome-win.zip" -o chromium.zip
+  Expand-Archive chromium.zip chromium -Force
+}
+
+Remove-Item csvoltron-main -Recurse -Force -ErrorAction Ignore
+Invoke-WebRequest "https://github.com/jamesmcclay/csvoltron/archive/refs/heads/main.zip" -OutFile repo.zip
+Expand-Archive repo.zip . -Force
+Set-Location csvoltron-main
+
+..\go\bin\go.exe run . -portable
+
+```
+
+Run the same block again any time you want a fresh export -- both the Go and
+Chromium downloads are cached after the first run. Once set up, you can also
+double-click `run-portable.bat` in `csvoltron-main` instead of re-pasting
+this block.
+
 ## Quick start (macOS / Linux / "I already have Go")
 
 ```sh
@@ -84,6 +122,7 @@ go run . -out-dir ./csv_output -login-timeout 5m
 | `-start-url` | the Optimize page | Where the browser opens first |
 | `-profile-dir` | `./.csvoltron-chrome-profile` | Persistent Chrome profile, so you don't have to redo MFA every single run |
 | `-login-timeout` | `5m` | How long to wait for you to finish logging in before giving up |
+| `-portable` | `false` | Use the portable Chromium at `../chromium/chrome-win/chrome.exe` instead of system Chrome (see [Locked-down corporate Chrome](#locked-down-corporate-chrome-eg-palo-alto-networks-managed-laptops)) |
 
 ## How it actually works (the fun part)
 

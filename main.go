@@ -21,20 +21,26 @@ func main() {
 	outDir := flag.String("out-dir", "./csv_output", "directory to write the 3 CSV files to")
 	profileDir := flag.String("profile-dir", "./.csvoltron-chrome-profile", "persistent Chrome user-data-dir, so a logged-in session can be reused across runs")
 	loginTimeout := flag.Duration("login-timeout", 5*time.Minute, "how long to wait for login + navigation to the Optimize page before giving up")
+	portable := flag.Bool("portable", false, "use the portable Chromium downloaded by the installer instead of system Chrome (for managed Chrome installs that block DevTools/remote debugging)")
 	flag.Parse()
 
-	if err := run(*startURL, *outDir, *profileDir, *loginTimeout); err != nil {
+	chromeExecPath := ""
+	if *portable {
+		chromeExecPath = filepath.Join("..", "chromium", "chrome-win", "chrome.exe")
+	}
+
+	if err := run(*startURL, *outDir, *profileDir, chromeExecPath, *loginTimeout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(startURL, outDir, profileDir string, loginTimeout time.Duration) error {
+func run(startURL, outDir, profileDir, chromeExecPath string, loginTimeout time.Duration) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create out dir: %w", err)
 	}
 
-	creds, err := auth.Login(context.Background(), startURL, profileDir, loginTimeout)
+	creds, err := auth.Login(context.Background(), startURL, profileDir, chromeExecPath, loginTimeout)
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}

@@ -35,7 +35,11 @@ var apiHostPattern = regexp.MustCompile(`^https://([^/]+)/api/config/v9\.2/`)
 // everything needed to call the API directly and closes the browser. It
 // gives up after timeout if no such call is seen (e.g. the user didn't
 // reach the Optimize page, or PAN changed the API).
-func Login(ctx context.Context, startURL, profileDir string, timeout time.Duration) (Credentials, error) {
+// chromeExecPath, if non-empty, overrides which Chrome/Chromium binary is
+// launched (e.g. a portable Chromium for machines whose managed Chrome
+// install has DevTools/remote debugging disabled by policy). Empty string
+// means "use chromedp's normal system Chrome detection".
+func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, timeout time.Duration) (Credentials, error) {
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return Credentials{}, fmt.Errorf("create profile dir: %w", err)
 	}
@@ -53,6 +57,12 @@ func Login(ctx context.Context, startURL, profileDir string, timeout time.Durati
 		chromedp.Flag("headless", false),
 		chromedp.UserDataDir(profileDir),
 	)
+	if chromeExecPath != "" {
+		if _, err := os.Stat(chromeExecPath); err != nil {
+			return Credentials{}, fmt.Errorf("portable Chromium not found at %s (re-run the installer to download it): %w", chromeExecPath, err)
+		}
+		allocOpts = append(allocOpts, chromedp.ExecPath(chromeExecPath))
+	}
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
 	defer cancelAlloc()
 
