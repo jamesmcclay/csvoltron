@@ -3,12 +3,12 @@
 *Defender of spreadsheets. Mortal enemy of configuration cruft.*
 
 Strata Cloud Manager's **Config Cleanup / Optimize** page (Unused Objects,
-Zero Hit Objects, Zero Hit Policy Rules) is genuinely useful — and also has
-no "export to CSV" button, and isn't part of any public API. So `csvoltron`
-opens a real Chrome window, lets you log in like a human (SSO, MFA, the
-works), quietly notices the access token your browser is already using, and
-then politely asks the API for the data itself. No clicking through tabs,
-no copy-pasting tables, no dignity lost.
+Zero Hit Objects, Zero Hit Policy Rules) has no "export to CSV" button, and 
+isn't part of any public API. So `csvoltron` opens a real Chrome window, 
+lets you log in like a human (SSO, MFA, the works), quietly notices the 
+access token your browser is already using, and then politely asks the API 
+for the data itself. No clicking through tabs, no copy-pasting tables, 
+no dignity lost.
 
 It writes out 3 timestamped CSVs you can drop straight into Excel, Sheets,
 or your weekly "please clean up your firewall rules" email.
