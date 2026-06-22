@@ -25,7 +25,7 @@ Set-Location $root
 
 if (!(Test-Path .\go\bin\go.exe)) {
   $v = (Invoke-WebRequest "https://go.dev/VERSION?m=text" -UseBasicParsing).Content.Split("`n")[0].Trim()
-  Invoke-WebRequest "https://go.dev/dl/$v.windows-amd64.zip" -OutFile go.zip
+  curl.exe -L "https://go.dev/dl/$v.windows-amd64.zip" -o go.zip
   Expand-Archive go.zip . -Force
 }
 
