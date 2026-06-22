@@ -117,11 +117,27 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 	select {
 	case creds := <-found:
 		fmt.Println("Authenticated session detected, closing browser.")
+		closeGracefully(browserCtx)
 		return creds, nil
 	case <-time.After(timeout):
+		closeGracefully(browserCtx)
 		return Credentials{}, fmt.Errorf("timed out after %s waiting for an authenticated Optimize API call; did you reach the Optimize page?", timeout)
 	case <-ctx.Done():
+		closeGracefully(browserCtx)
 		return Credentials{}, ctx.Err()
+	}
+}
+
+// closeGracefully asks Chrome to quit via the CDP Browser.close command
+// instead of leaving it to the deferred context cancellation, which kills
+// the process outright (SIGKILL) and can leave stale SingletonLock /
+// SingletonSocket files in profileDir on macOS/Linux. A stale lock makes
+// the *next* run's Chrome hang trying to hand off to the (now-dead) old
+// process instead of starting fresh, which chromedp sees as "websocket url
+// timeout reached".
+func closeGracefully(browserCtx context.Context) {
+	if err := chromedp.Cancel(browserCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: failed to gracefully close browser:", err)
 	}
 }
 
