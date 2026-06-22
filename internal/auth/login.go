@@ -72,6 +72,10 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 		}
 		allocOpts = append(allocOpts, chromedp.ExecPath(chromeExecPath))
 	}
+	// TODO(temporary): forward Chrome's own stdout/stderr so we can see what
+	// it prints (if anything) during the "websocket url timeout reached"
+	// failure on reused profile dirs. Remove once that's diagnosed.
+	allocOpts = append(allocOpts, chromedp.CombinedOutput(os.Stderr))
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
 	defer cancelAlloc()
 
