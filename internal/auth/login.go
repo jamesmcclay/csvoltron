@@ -55,6 +55,15 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false),
+		// Without this, Chrome's BackgroundModeManager can keep a process
+		// alive (e.g. as a macOS background/tray process) after the window
+		// closes, even after a graceful CDP close. That leftover process
+		// keeps holding profileDir's SingletonLock, so the *next* run's
+		// Chrome silently hands off to it instead of starting fresh --
+		// chromedp then times out waiting for a websocket URL that the
+		// already-running process never prints ("websocket url timeout
+		// reached").
+		chromedp.Flag("disable-background-mode", true),
 		chromedp.UserDataDir(profileDir),
 	)
 	if chromeExecPath != "" {
