@@ -156,6 +156,18 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 	if err := chromedp.Run(browserCtx,
 		network.Enable(),
 		chromedp.ActionFunc(func(c context.Context) error {
+			// Close any tabs restored from a previous session (or opened by
+			// Chrome's default new-tab behavior) before we navigate, so the
+			// browser always starts clean regardless of what the last run left
+			// behind. We keep only the tab chromedp itself created.
+			myID := chromedp.FromContext(c).Target.TargetID
+			if targets, err := target.GetTargets().Do(c); err == nil {
+				for _, t := range targets {
+					if t.Type == "page" && t.TargetID != myID {
+						target.CloseTarget(t.TargetID).Do(c) //nolint:errcheck
+					}
+				}
+			}
 			watch(c)
 			return nil
 		}),

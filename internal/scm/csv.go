@@ -96,30 +96,42 @@ func humanizeType(objType, xpath string) string {
 	return strings.Join(words, " ")
 }
 
-// daysSince computes whole days between an RFC1123 "currentTime" (as the
-// unreferencedObjects API gives it, e.g. "Fri, 19 Jun 2026 06:41:36 GMT")
-// and an RFC3339 timestamp, matching the SCM UI's "Days Unused" column.
-// Returns "" if either can't be parsed.
-func daysSince(currentTime, timestamp string) string {
-	cur, err := time.Parse(time.RFC1123, currentTime)
-	if err != nil {
-		return ""
-	}
-	ts, err := time.Parse(time.RFC3339Nano, timestamp)
-	if err != nil {
-		return ""
-	}
-	// Ceiling, not floor/truncation: any partial day counts as a full day,
-	// confirmed against the SCM UI's own "Days Unused" values.
-	diff := cur.Sub(ts)
-	days := int(diff / (24 * time.Hour))
-	if diff%(24*time.Hour) > 0 {
-		days++
-	}
+// daysElapsed returns how many whole calendar days have elapsed between t and
+// today, matching how the SCM UI computes "Days Unused" and "Days with Zero
+// Hits". The GUI uses the browser's local calendar date for "today" and the
+// UTC calendar date for API timestamps, so we do the same: pull the local
+// date from time.Now() and compare it against t's UTC date.
+func daysElapsed(t time.Time) string {
+	// Local calendar date for "today" (matches the browser's perspective).
+	y, m, d := time.Now().Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	tsDay := t.UTC().Truncate(24 * time.Hour)
+	days := int(today.Sub(tsDay) / (24 * time.Hour))
 	if days < 0 {
 		days = 0
 	}
 	return strconv.Itoa(days)
+}
+
+// daysFromTodayRFC3339 parses an RFC3339Nano timestamp and returns the
+// number of elapsed UTC calendar days to today.
+func daysFromTodayRFC3339(ts string) string {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return ""
+	}
+	return daysElapsed(t)
+}
+
+// daysFromToday parses a timestamp in "2006-01-02 15:04:05" format
+// (implicitly UTC, as used by the SCM and spiffy/v1 APIs) and returns the
+// number of elapsed UTC calendar days to today.
+func daysFromToday(ts string) string {
+	t, err := time.Parse("2006-01-02 15:04:05", ts)
+	if err != nil {
+		return ""
+	}
+	return daysElapsed(t)
 }
 
 func writeCSV(path string, header []string, rows [][]string) error {
@@ -146,11 +158,11 @@ func writeCSV(path string, header []string, rows [][]string) error {
 // Cloud Manager objects carry unreferencedTimestamp in RFC3339Nano format;
 // spiffy/v1 Panorama objects omit it and carry only createdTimestamp in
 // "2006-01-02 15:04:05" format, so we fall back to that.
-func daysUnused(currentTime, unreferencedTimestamp, createdTimestamp string) string {
+func daysUnused(unreferencedTimestamp, createdTimestamp string) string {
 	if unreferencedTimestamp != "" {
-		return daysSince(currentTime, unreferencedTimestamp)
+		return daysFromTodayRFC3339(unreferencedTimestamp)
 	}
-	return daysSinceCreated(currentTime, createdTimestamp)
+	return daysFromToday(createdTimestamp)
 }
 
 // WriteUnusedObjectsCSV exports the "Unused Objects" view. panorama controls
@@ -168,7 +180,7 @@ func WriteUnusedObjectsCSV(path string, resp *UnreferencedObjectsResponse, panor
 			name,
 			humanizeType(o.Type, o.Xpath),
 			humanizeLocation(location),
-			daysUnused(resp.CurrentTime, o.UnreferencedTimestamp, o.CreatedTimestamp),
+			daysUnused(o.UnreferencedTimestamp, o.CreatedTimestamp),
 			o.UnreferencedTimestamp,
 			o.CreatedTimestamp,
 			o.UpdatedTimestamp,
@@ -281,32 +293,6 @@ func rulebase(r RuleEntry) string {
 	return ""
 }
 
-// daysSinceCreated computes whole days (ceiling) between now (RFC1123) and
-// a rule's @createdTime ("2026-05-11 21:03:24", implicitly UTC), matching
-// the SCM UI's "Days with Zero Hits" column. The UI's own label says this
-// is technically relative to SCM Pro activation, not rule creation, but
-// creation time is the only bound we have visibility into, and it matched
-// the UI exactly for every rule checked (i.e. these rules were all created
-// after activation). Returns "" if either can't be parsed.
-func daysSinceCreated(now, createdTime string) string {
-	cur, err := time.Parse(time.RFC1123, now)
-	if err != nil {
-		return ""
-	}
-	ts, err := time.Parse("2006-01-02 15:04:05", createdTime)
-	if err != nil {
-		return ""
-	}
-	diff := cur.Sub(ts)
-	days := int(diff / (24 * time.Hour))
-	if diff%(24*time.Hour) > 0 {
-		days++
-	}
-	if days < 0 {
-		days = 0
-	}
-	return strconv.Itoa(days)
-}
 
 // ruleStatus converts the PAN-OS "disabled" field ("yes"/"no") to the
 // human-readable label the SCM UI shows in the Status column.
@@ -365,34 +351,9 @@ func panoramaRuleStatus(s string) string {
 	return s
 }
 
-// daysSincePanoramaTime computes whole days (ceiling) between two timestamps
-// both in "2006-01-02 15:04:05" format, as used by spiffy/v1 unusedPolicies
-// @currentTime and @createdTime fields.
-func daysSincePanoramaTime(now, createdTime string) string {
-	const layout = "2006-01-02 15:04:05"
-	cur, err := time.Parse(layout, now)
-	if err != nil {
-		return ""
-	}
-	ts, err := time.Parse(layout, createdTime)
-	if err != nil {
-		return ""
-	}
-	diff := cur.Sub(ts)
-	days := int(diff / (24 * time.Hour))
-	if diff%(24*time.Hour) > 0 {
-		days++
-	}
-	if days < 0 {
-		days = 0
-	}
-	return strconv.Itoa(days)
-}
-
 // WriteUnusedPoliciesCSV exports the "Zero Hit Policy Rules" view for
 // Panorama-sourced data from PanoramaClient.UnusedPolicies.
 func WriteUnusedPoliciesCSV(path string, resp *UnusedPoliciesResponse) error {
-	now := resp.Result.CurrentTime
 	header := []string{
 		"Name", "Status", "Days with Zero Hits", "Action",
 		"Source Zone", "Source Address", "User", "Source Device",
@@ -406,10 +367,14 @@ func WriteUnusedPoliciesCSV(path string, resp *UnusedPoliciesResponse) error {
 	}
 	rows := make([][]string, 0, len(resp.Result.Result.Entry))
 	for _, r := range resp.Result.Result.Entry {
+		ts := r.HitTimestamp
+		if ts == "" {
+			ts = r.CreatedTime
+		}
 		rows = append(rows, []string{
 			r.Name,
 			panoramaRuleStatus(r.ReviewStatus),
-			daysSincePanoramaTime(now, r.CreatedTime),
+			daysFromToday(ts),
 			r.Action,
 			strings.Join(r.From.Member, ";"),
 			strings.Join(r.Source.Member, ";"),
@@ -444,10 +409,8 @@ func WriteUnusedPoliciesCSV(path string, resp *UnusedPoliciesResponse) error {
 }
 
 // WriteZeroHitPolicyRulesCSV exports the "Zero Hit Policy Rules" view for
-// Cloud Manager. now is the server's current time (RFC1123, as returned in
-// the unreferencedObjects response's currentTime field) used for "Days with
-// Zero Hits". No Status column -- it is not shown in the Cloud Manager UI.
-func WriteZeroHitPolicyRulesCSV(path string, resp *RulesResponse, now string) error {
+// Cloud Manager. No Status column -- it is not shown in the Cloud Manager UI.
+func WriteZeroHitPolicyRulesCSV(path string, resp *RulesResponse) error {
 	header := []string{
 		"Name", "Days with Zero Hits", "Action",
 		// Source columns (match UI's "SOURCE" group header)
@@ -468,7 +431,7 @@ func WriteZeroHitPolicyRulesCSV(path string, resp *RulesResponse, now string) er
 	for _, r := range resp.Result.Result.Entry {
 		rows = append(rows, []string{
 			r.Name,
-			daysSinceCreated(now, r.CreatedTime),
+			daysFromToday(r.HitTimestamp),
 			r.Action,
 			strings.Join(r.From.Member, ";"),
 			strings.Join(r.Source.Member, ";"),

@@ -167,7 +167,7 @@ func exportCloudManager(client *scm.Client, m scm.Manager, outDir, date string) 
 		return fmt.Errorf("fetch zero hit policy rules: %w", err)
 	}
 	zeroHitRulesPath := filepath.Join(outDir, fmt.Sprintf("zero_hit_policy_rules_%s_%s.csv", slug, date))
-	if err := scm.WriteZeroHitPolicyRulesCSV(zeroHitRulesPath, unusedRules, unreferenced.CurrentTime); err != nil {
+	if err := scm.WriteZeroHitPolicyRulesCSV(zeroHitRulesPath, unusedRules); err != nil {
 		return fmt.Errorf("write %s: %w", zeroHitRulesPath, err)
 	}
 	fmt.Printf("Wrote %d rule(s) -> %s\n", len(unusedRules.Result.Result.Entry), zeroHitRulesPath)
