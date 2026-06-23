@@ -62,8 +62,7 @@ your data.
 Cloud Manager tenant.
 
 `csvoltron` brings its own portable Chromium rather than using whatever
-Chrome you have installed, since corporate-managed Chrome (e.g. Palo Alto
-Networks laptops) often blocks the DevTools/remote-debugging access it
+Chrome you have installed, since corporate-managed Chrome often blocks the DevTools/remote-debugging access it
 needs via enterprise policy.
 
 ## Quick start (macOS / "I already have Go")
