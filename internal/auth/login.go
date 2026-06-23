@@ -212,8 +212,11 @@ func closeGracefully(browserCtx context.Context) {
 	}
 }
 
-// watchNewTabs calls watch(subCtx) for every new top-level "page" target
-// (tab/popup) created for the lifetime of browserCtx.
+// watchNewTabs handles page targets that appear after our initial navigation.
+// Tabs opened by a page via window.open() carry an OpenerID (SSO popups do
+// this); those are watched for authenticated requests just like the initial
+// tab. Tabs that appear without an OpenerID are from Chrome's session restore
+// and are closed immediately to keep the browser clean between runs.
 func watchNewTabs(browserCtx context.Context, watch func(context.Context)) {
 	initialID := chromedp.FromContext(browserCtx).Target.TargetID
 
@@ -239,6 +242,12 @@ func watchNewTabs(browserCtx context.Context, watch func(context.Context)) {
 		seen[info.TargetID] = true
 		mu.Unlock()
 		if already {
+			return
+		}
+
+		if info.OpenerID == "" {
+			// No opener: this is a session-restored tab, not a popup.
+			go target.CloseTarget(info.TargetID).Do(browserCtx) //nolint:errcheck
 			return
 		}
 
