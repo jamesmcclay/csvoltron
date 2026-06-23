@@ -68,6 +68,24 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 	}
 	profileDir = absProfileDir
 
+	// Delete Chrome's session files so it starts with no tabs to restore.
+	// The persistent profile is kept only for auth state (cookies, tokens);
+	// tab history across runs is unwanted clutter.
+	//
+	// Older Chrome used flat files (Current Session, Current Tabs, …);
+	// newer Chrome/Chromium stores them under Default/Sessions/ with
+	// timestamp-based names. We clear both to cover all versions.
+	for _, name := range []string{"Current Tabs", "Current Session", "Last Tabs", "Last Session"} {
+		os.Remove(filepath.Join(profileDir, "Default", name))
+	}
+	if entries, err := os.ReadDir(filepath.Join(profileDir, "Default", "Sessions")); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				os.Remove(filepath.Join(profileDir, "Default", "Sessions", e.Name()))
+			}
+		}
+	}
+
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false),
 		// Stops Chrome from keeping a process alive in the background (e.g.
