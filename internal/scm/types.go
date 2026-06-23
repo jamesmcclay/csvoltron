@@ -4,6 +4,8 @@
 // engineered from the browser's own network traffic (see cmd/discover).
 package scm
 
+import "encoding/json"
+
 // UnreferencedObjectsResponse is the body of
 // GET /api/config/v9.2/object/unreferencedObjects -- backs the "Unused
 // Objects" view.
@@ -25,16 +27,27 @@ type UnreferencedObject struct {
 	UnreferencedTimestamp string `json:"unreferencedTimestamp"`
 	CreatedTimestamp      string `json:"createdTimestamp"`
 	UpdatedTimestamp      string `json:"updatedTimestamp"`
+	// Status is present on Panorama-sourced objects; Cloud Manager omits it.
+	Status string `json:"status"`
 }
 
 // ZeroHitObject is one element of the top-level array returned by
 // GET /api/config/v9.2/object/zeroHitObjects -- backs the "Zero Hit
 // Objects" view. Each element groups the zero-hit objects referenced by one
 // policy rule.
+//
+// Panorama-sourced data (see PanoramaClient) reuses this same struct: it
+// adds RuleDefinition (the rule embedded inline, instead of a separate
+// rule lookup) and gives each object HitTimestamp/TimeStamp instead of
+// ObjectType/DaysSinceHit. Fields the current source doesn't provide are
+// just left zero-valued.
 type ZeroHitObjectsEntry struct {
 	RuleUUID string               `json:"rule_uuid"`
-	Count    string               `json:"count"`
+	Count    flexString           `json:"count"`
 	Objects  []ZeroHitObjectEntry `json:"objects"`
+	// RuleDefinition is the rule this entry belongs to, JSON-encoded as a
+	// string in the same shape as RuleEntry (Panorama-sourced data only).
+	RuleDefinition string `json:"rule_definition"`
 }
 
 type ZeroHitObjectEntry struct {
@@ -42,6 +55,28 @@ type ZeroHitObjectEntry struct {
 	ObjectName   string `json:"object_name"`
 	ObjectType   string `json:"object_type"`
 	DaysSinceHit int    `json:"days_since_hit"`
+	// HitTimestamp/TimeStamp are what Panorama-sourced data gives instead
+	// of ObjectType/DaysSinceHit.
+	HitTimestamp string `json:"hit_timestamp"`
+	TimeStamp    string `json:"time_stamp"`
+}
+
+// flexString unmarshals from either a JSON string or a JSON number into a
+// Go string -- Cloud Manager's zeroHitObjects API returns "count" as a
+// quoted string, Panorama's returns it as a bare number.
+type flexString string
+
+func (s *flexString) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		*s = flexString(str)
+		return nil
+	}
+	*s = flexString(b)
+	return nil
 }
 
 // RulesResponse is the body of both GET /api/config/v9.2/Policies/AllSecurityRules
@@ -65,11 +100,12 @@ type RuleEntry struct {
 	// on rules belonging to a specific site/location. Default (a rule that
 	// ships with a snippet) and Position are mutually exclusive in
 	// practice -- a rule has one or the other, never both.
-	Position       string     `json:"@position"`
-	Default        string     `json:"@default"`
-	CreatedTime    string     `json:"@createdTime"`
-	UpdatedTime    string     `json:"@updatedTime"`
-	Disabled       string     `json:"disabled"`
+	Position      string `json:"@position"`
+	Default       string `json:"@default"`
+	CreatedTime   string `json:"@createdTime"`
+	UpdatedTime   string `json:"@updatedTime"`
+	HitTimestamp  string `json:"@hitTimestamp"`
+	Disabled      string `json:"disabled"`
 	Description    string     `json:"description"`
 	From           memberList `json:"from"`
 	Source         memberList `json:"source"`
@@ -94,6 +130,73 @@ type RuleEntry struct {
 	BlockWebApplication namedEntryList `json:"block-web-application"`
 	AllowURLCategory    namedEntryList `json:"allow-url-category"`
 	BlockURLCategory    namedEntryList `json:"block-url-category"`
+
+	// SD-WAN source matching criteria (omitted by non-SD-WAN rules).
+	Subscriber  memberList `json:"subscriber"`
+	Equipment   memberList `json:"equipment"`
+	NwContainer memberList `json:"nw-container"` // "Network Container" column in the UI
+
+	// SaaS matching criteria (omitted by non-SaaS rules).
+	SaasTenantList memberList `json:"saas-tenant-list"`
+	SaasUserList   memberList `json:"saas-user-list"`
+
+	// ReviewStatus is the Config Cleanup review-workflow state shown in the
+	// "Status" column for Panorama spiffy/v1 unusedPolicies data
+	// (stored as "@status"). Empty string means the UI shows "Pending Review".
+	ReviewStatus string `json:"@status"`
+
+	// These back the "Options" column in the UI. Like everything else here,
+	// PAN-OS omits the field entirely rather than including a default value
+	// when it hasn't been explicitly set on the rule.
+	LogStart   string `json:"log-start"`
+	LogEnd     string `json:"log-end"`
+	LogSetting string `json:"log-setting"` // Log Forwarding profile name
+	Option     struct {
+		DisableServerResponseInspection string `json:"disable-server-response-inspection"`
+	} `json:"option"`
+}
+
+// Manager is one entry of the array returned by
+// GET https://api-prod.us.secure-policy.cloudmgmt.paloaltonetworks.com/spiffy/v1/panmetadata
+// -- the data source(s) behind the "Cloud Manager" / "Panorama" dropdown
+// next to the Config Cleanup page title. Cloud Manager itself is always
+// included as one entry (ModelNo "cloud_mgmt"); every Panorama appliance
+// connected to this tenant is another entry (ModelNo "Panorama").
+type Manager struct {
+	// ID is the "pan_id" query param used on PanoramaClient's spiffy/v1
+	// calls for this manager.
+	ID int `json:"id"`
+	// SerialID is the "instance_id" query param used on PanoramaClient's
+	// spiffy/v1 calls for this manager.
+	SerialID string `json:"serialid"`
+	// SecondarySerialID, if set, is the HA peer's serial number -- sent as
+	// the x-passive-peer-serial header on PanoramaClient requests.
+	SecondarySerialID string `json:"secondary_serialid"`
+	ModelNo           string `json:"modelno"`
+	Hostname          string `json:"hostname"`
+}
+
+// IsCloudManager reports whether this entry is Cloud Manager itself, as
+// opposed to a connected Panorama appliance.
+func (m Manager) IsCloudManager() bool {
+	return m.ModelNo == "cloud_mgmt"
+}
+
+// UnusedPoliciesResponse is the body of
+// GET .../spiffy/v1/unusedPolicies -- backs the "Zero Hit Policy Rules"
+// view for Panorama-sourced data.
+type UnusedPoliciesResponse struct {
+	OK     bool `json:"ok"`
+	Result struct {
+		CurrentTime                    string `json:"@currentTime"`
+		LastAnalysisTime               string `json:"@lastAnalysisTime"`
+		PreviousSuccessfulAnalysisTime string `json:"@previousSuccessfulAnalysisTime"`
+		Result                         struct {
+			Entry []RuleEntry `json:"entry"`
+		} `json:"result"`
+		Total int `json:"total"`
+	} `json:"result"`
+	ConfigID string `json:"configId"`
 }
 
 type memberList struct {

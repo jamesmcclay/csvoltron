@@ -7,10 +7,12 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,11 +25,24 @@ import (
 type Credentials struct {
 	Host string // e.g. "paas-16.prod.panorama.paloaltonetworks.com"
 	JWT  string // value of the x-auth-jwt header
+
+	// IAMToken is the OIDC access token issued during the SSO login this
+	// Login call drove (the body of the .../am/oauth2/access_token
+	// exchange's "access_token" field) -- it's what scm.PanoramaClient
+	// authenticates with for Panorama-sourced data. Captured on a
+	// best-effort basis: it's normally available well before Host/JWT are
+	// (it's issued early in the SSO flow), but is left empty rather than
+	// failing Login if it somehow isn't seen in time.
+	IAMToken string
 }
 
 // apiHostPattern matches the SCM backend API calls we want to piggyback
 // on -- any call to a tenant's Panorama-as-a-Service host's config API.
 var apiHostPattern = regexp.MustCompile(`^https://([^/]+)/api/config/v9\.2/`)
+
+// accessTokenURLSuffix matches the OIDC token exchange call whose response
+// body carries the access token PanoramaClient needs.
+const accessTokenURLSuffix = "/am/oauth2/access_token"
 
 // Login opens a visible Chrome window at startURL, waits for the user to
 // complete SSO + MFA and reach the Optimize page by hand, and returns as
@@ -61,9 +76,6 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 		chromedp.UserDataDir(profileDir),
 	)
 	if chromeExecPath != "" {
-		if _, err := os.Stat(chromeExecPath); err != nil {
-			return Credentials{}, fmt.Errorf("portable Chromium not found at %s (re-run the installer to download it): %w", chromeExecPath, err)
-		}
 		allocOpts = append(allocOpts, chromedp.ExecPath(chromeExecPath))
 	}
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
@@ -74,23 +86,70 @@ func Login(ctx context.Context, startURL, profileDir, chromeExecPath string, tim
 
 	found := make(chan Credentials, 1)
 	var once sync.Once
-	report := func(c Credentials) { once.Do(func() { found <- c }) }
+	var mu sync.Mutex
+	var iamToken string
+	report := func(host, jwt string) {
+		once.Do(func() {
+			mu.Lock()
+			tok := iamToken
+			mu.Unlock()
+			found <- Credentials{Host: host, JWT: jwt, IAMToken: tok}
+		})
+	}
 
 	watch := func(watchCtx context.Context) {
+		// Tracks requestIDs of in-flight access-token exchange calls, so
+		// their response body (fetched once EventLoadingFinished fires) can
+		// be matched back to the right request.
+		pendingTokenReqs := make(map[network.RequestID]bool)
+
 		chromedp.ListenTarget(watchCtx, func(ev interface{}) {
-			req, ok := ev.(*network.EventRequestWillBeSent)
-			if !ok {
-				return
+			switch e := ev.(type) {
+			case *network.EventRequestWillBeSent:
+				if e.Request.Method == "POST" && strings.Contains(e.Request.URL, accessTokenURLSuffix) {
+					mu.Lock()
+					pendingTokenReqs[e.RequestID] = true
+					mu.Unlock()
+				}
+
+				m := apiHostPattern.FindStringSubmatch(e.Request.URL)
+				if m == nil {
+					return
+				}
+				jwt, ok := e.Request.Headers["x-auth-jwt"].(string)
+				if !ok || jwt == "" {
+					return
+				}
+				report(m[1], jwt)
+
+			case *network.EventLoadingFinished:
+				mu.Lock()
+				isTokenReq := pendingTokenReqs[e.RequestID]
+				delete(pendingTokenReqs, e.RequestID)
+				mu.Unlock()
+				if !isTokenReq {
+					return
+				}
+				// Must run off this goroutine: GetResponseBody blocks on a
+				// reply from the same CDP websocket read loop that's
+				// delivering this very event (see internal/capture for the
+				// same pattern).
+				go func(reqID network.RequestID) {
+					body, err := network.GetResponseBody(reqID).Do(watchCtx)
+					if err != nil {
+						return
+					}
+					var parsed struct {
+						AccessToken string `json:"access_token"`
+					}
+					if err := json.Unmarshal(body, &parsed); err != nil || parsed.AccessToken == "" {
+						return
+					}
+					mu.Lock()
+					iamToken = parsed.AccessToken
+					mu.Unlock()
+				}(e.RequestID)
 			}
-			m := apiHostPattern.FindStringSubmatch(req.Request.URL)
-			if m == nil {
-				return
-			}
-			jwt, ok := req.Request.Headers["x-auth-jwt"].(string)
-			if !ok || jwt == "" {
-				return
-			}
-			report(Credentials{Host: m[1], JWT: jwt})
 		})
 	}
 

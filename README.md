@@ -10,53 +10,15 @@ access token your browser is already using, and then politely asks the API
 for the data itself. No clicking through tabs, no copy-pasting tables, 
 no dignity lost.
 
-It writes out 3 timestamped CSVs you can drop straight into Excel, Sheets,
-or your weekly "please clean up your firewall rules" email.
+It writes timestamped CSVs — one set per data source (Cloud Manager plus any
+Panorama appliances connected to your tenant) — that you can drop straight
+into Excel, Sheets, or your weekly "please clean up your firewall rules"
+email.
 
 ## Quick start (Windows)
 
-You don't need Go installed. You don't even need `git`. Open **PowerShell**
-and paste this:
-
-```powershell
-$root = Join-Path $env:USERPROFILE "csvoltron-run"
-mkdir $root -Force | Out-Null
-Set-Location $root
-
-if (!(Test-Path .\go\bin\go.exe)) {
-  $v = (Invoke-WebRequest "https://go.dev/VERSION?m=text" -UseBasicParsing).Content.Split("`n")[0].Trim()
-  curl.exe -L "https://go.dev/dl/$v.windows-amd64.zip" -o go.zip
-  Expand-Archive go.zip . -Force
-}
-
-Remove-Item csvoltron-main -Recurse -Force -ErrorAction Ignore
-Invoke-WebRequest "https://github.com/jamesmcclay/csvoltron/archive/refs/heads/main.zip" -OutFile repo.zip
-Expand-Archive repo.zip . -Force
-Set-Location csvoltron-main
-
-..\go\bin\go.exe run .
-
-```
-
-What that does, in order: grabs a portable copy of Go (cached for next time,
-~150MB the first run only), downloads this repo as a zip (no `git` needed),
-and runs the tool. A Chrome window will pop up — log in, do your MFA dance,
-and once you land on the Optimize page, `csvoltron` notices and takes it
-from there automatically. No need to press anything.
-
-Run the same block again any time you want a fresh export — it'll skip the
-Go download (already cached) and re-fetch just the repo and your data.
-
-**Requirements:** Windows 10/11, PowerShell, Google Chrome installed, and
-network access to both `go.dev`/`github.com` and your Strata Cloud Manager
-tenant.
-
-### Locked-down corporate Chrome
-
-If `csvoltron` fails with `chrome failed to start: ... DevTools remote
-debugging is disallowed by the system admin`, your company's Chrome policy
-blocks the automation csvoltron needs. Use this installer instead -- it also
-downloads a portable, unmanaged Chromium that isn't subject to that policy:
+You don't need Go or Chrome installed. You don't even need `git`. Open
+**PowerShell** and paste this:
 
 ```powershell
 $root = Join-Path $env:USERPROFILE "csvoltron-run"
@@ -80,30 +42,31 @@ Invoke-WebRequest "https://github.com/jamesmcclay/csvoltron/archive/refs/heads/m
 Expand-Archive repo.zip . -Force
 Set-Location csvoltron-main
 
-..\go\bin\go.exe run . -portable
+..\go\bin\go.exe run .
 
 ```
 
-Run the same block again any time you want a fresh export -- both the Go and
-Chromium downloads are cached after the first run. Once set up, you can also
-double-click `run-portable.bat` in `csvoltron-main` instead of re-pasting
-this block.
+What that does, in order: grabs a portable copy of Go and a portable copy of
+Chromium (cached for next time, ~150MB + ~300MB the first run only),
+downloads this repo as a zip (no `git` needed), and runs the tool. A Chrome
+window will pop up — log in, do your MFA dance, and once you land on the
+Optimize page, `csvoltron` notices and takes it from there automatically.
+No need to press anything.
 
-## Quick start (macOS / Linux / "I already have Go")
+Run the same block again any time you want a fresh export — it'll skip the
+Go and Chromium downloads (already cached) and re-fetch just the repo and
+your data.
 
-```sh
-git clone https://github.com/jamesmcclay/csvoltron.git
-cd csvoltron
-go run .
-```
+**Requirements:** Windows 10/11, PowerShell, and network access to
+`go.dev`/`github.com`/`commondatastorage.googleapis.com` and your Strata
+Cloud Manager tenant.
 
-### Locked-down corporate Chrome (macOS)
+`csvoltron` brings its own portable Chromium rather than using whatever
+Chrome you have installed, since corporate-managed Chrome (e.g. Palo Alto
+Networks laptops) often blocks the DevTools/remote-debugging access it
+needs via enterprise policy.
 
-If `csvoltron` fails with `... DevTools remote debugging is disallowed by
-the system admin`, or just hangs and times out waiting for a websocket URL,
-your company's Chrome policy blocks the automation csvoltron needs. Use
-this instead -- it downloads a portable, unmanaged Chromium as a sibling of
-your checkout and runs with `-portable`:
+## Quick start (macOS / "I already have Go")
 
 ```sh
 mkdir -p ~/csvoltron-run && cd ~/csvoltron-run
@@ -120,12 +83,14 @@ rm -rf csvoltron
 git clone https://github.com/jamesmcclay/csvoltron.git
 cd csvoltron
 
-go run . -portable
+go run .
 ```
 
 Run the same block again any time you want a fresh export -- the Chromium
-download is cached after the first run. (Linux isn't supported by
-`-portable` yet.)
+download is cached after the first run.
+
+(Linux doesn't have a portable Chromium wired up yet -- `go run .` there
+falls back to whatever Chrome is already installed.)
 
 ## What you get
 
@@ -133,9 +98,11 @@ After a run, look in `csv_output/` for:
 
 | File | What's in it |
 |---|---|
-| `unused_objects_<timestamp>.csv` | Objects nobody references anymore |
-| `zero_hit_objects_<timestamp>.csv` | Security rules with zero-hit objects inside them (source/dest/app/etc.) |
-| `zero_hit_policy_rules_<timestamp>.csv` | Whole rules that have never matched traffic |
+| `unused_objects_<source>_<timestamp>.csv` | Objects nobody references anymore |
+| `zero_hit_objects_<source>_<timestamp>.csv` | Security rules with zero-hit objects inside them (source/dest/app/etc.) |
+| `zero_hit_policy_rules_<source>_<timestamp>.csv` | Whole rules that have never matched traffic (Cloud Manager only for now) |
+
+`<source>` is a slug derived from the data source's hostname (e.g. `cloud-manager`, `panorama-us-west`). If you only have Cloud Manager with no connected Panoramas, you'll get one set of three files — same as before.
 
 Every run gets its own timestamp down to the second, so feel free to run it
 as often as you like without clobbering yesterday's export.
@@ -152,7 +119,7 @@ go run . -out-dir ./csv_output -login-timeout 5m
 | `-start-url` | the Optimize page | Where the browser opens first |
 | `-profile-dir` | `./.csvoltron-chrome-profile` | Persistent Chrome profile, so you don't have to redo MFA every single run |
 | `-login-timeout` | `5m` | How long to wait for you to finish logging in before giving up |
-| `-portable` | `false` | Use the portable Chromium downloaded by the installer instead of system Chrome -- see "Locked-down corporate Chrome" under your OS's quick start above |
+| `-source` | *(all)* | Only export from the source whose hostname contains this text (e.g. `-source panorama`) |
 
 ## How it actually works (the fun part)
 
@@ -162,8 +129,9 @@ trying to fully script SSO + MFA headlessly (good luck), `csvoltron`:
 
 1. Opens a real, visible Chrome window and lets *you* be the human in the
    loop for login + MFA — the part that genuinely needs a human.
-2. Watches the network traffic just long enough to spot that token and the
-   tenant's API host.
+2. Watches the network traffic just long enough to spot two tokens: the
+   short-lived SCM JWT (`x-auth-jwt`, used for Cloud Manager calls) and the
+   OIDC access token from the SSO exchange (used for Panorama calls).
 3. Closes the browser and switches to plain old `net/http` for the actual
    data pulls — fast, scriptable, and not dependent on a browser staying
    open.

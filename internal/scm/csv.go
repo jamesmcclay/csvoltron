@@ -2,6 +2,7 @@ package scm
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -141,23 +142,65 @@ func writeCSV(path string, header []string, rows [][]string) error {
 	return w.Error()
 }
 
-// WriteUnusedObjectsCSV exports the "Unused Objects" view.
-func WriteUnusedObjectsCSV(path string, resp *UnreferencedObjectsResponse) error {
-	header := []string{"name", "object_type", "location", "days_unused", "unreferenced_since", "created", "updated"}
+// daysUnused computes the "Days Unused" value for an unreferenced object.
+// Cloud Manager objects carry unreferencedTimestamp in RFC3339Nano format;
+// spiffy/v1 Panorama objects omit it and carry only createdTimestamp in
+// "2006-01-02 15:04:05" format, so we fall back to that.
+func daysUnused(currentTime, unreferencedTimestamp, createdTimestamp string) string {
+	if unreferencedTimestamp != "" {
+		return daysSince(currentTime, unreferencedTimestamp)
+	}
+	return daysSinceCreated(currentTime, createdTimestamp)
+}
+
+// WriteUnusedObjectsCSV exports the "Unused Objects" view. panorama controls
+// whether to include the Status column, which only appears in the UI for
+// Panorama-sourced data.
+func WriteUnusedObjectsCSV(path string, resp *UnreferencedObjectsResponse, panorama bool) error {
+	header := []string{"Name", "Object Type", "Location", "Days Unused", "Unreferenced Since", "Created", "Updated"}
+	if panorama {
+		header = []string{"Name", "Status", "Object Type", "Location", "Days Unused", "Unreferenced Since", "Created", "Updated"}
+	}
 	rows := make([][]string, 0, len(resp.UnreferencedObjects))
 	for _, o := range resp.UnreferencedObjects {
 		name, location := nameAndLocation(o.Xpath)
-		rows = append(rows, []string{
+		row := []string{
 			name,
 			humanizeType(o.Type, o.Xpath),
 			humanizeLocation(location),
-			daysSince(resp.CurrentTime, o.UnreferencedTimestamp),
+			daysUnused(resp.CurrentTime, o.UnreferencedTimestamp, o.CreatedTimestamp),
 			o.UnreferencedTimestamp,
 			o.CreatedTimestamp,
 			o.UpdatedTimestamp,
-		})
+		}
+		if panorama {
+			row = append([]string{name, panoramaRuleStatus(o.Status)}, row[1:]...)
+		}
+		rows = append(rows, row)
 	}
 	return writeCSV(path, header, rows)
+}
+
+// RulesFromZeroHitObjects builds a RulesResponse from each entry's embedded
+// RuleDefinition, for Panorama-sourced ZeroHitObjects data -- which embeds
+// the full rule inline instead of requiring a separate rule lookup the way
+// Cloud Manager's AllSecurityRules does. Entries without a RuleDefinition
+// (Cloud Manager's) are skipped; callers with Cloud Manager data already
+// have a real RulesResponse from AllSecurityRules to pass to
+// WriteZeroHitObjectsCSV instead of this.
+func RulesFromZeroHitObjects(entries []ZeroHitObjectsEntry) *RulesResponse {
+	var resp RulesResponse
+	for _, e := range entries {
+		if e.RuleDefinition == "" {
+			continue
+		}
+		var r RuleEntry
+		if err := json.Unmarshal([]byte(e.RuleDefinition), &r); err != nil {
+			continue
+		}
+		resp.Result.Result.Entry = append(resp.Result.Result.Entry, r)
+	}
+	return &resp
 }
 
 // WriteZeroHitObjectsCSV exports the "Zero Hit Objects" view. rules is used
@@ -173,9 +216,14 @@ func WriteZeroHitObjectsCSV(path string, entries []ZeroHitObjectsEntry, rules *R
 	// with Zero Hit Objects" table -- not one row per object, which reads
 	// nothing like what's on screen.
 	header := []string{
-		"rule_name", "rule_uuid", "location", "action",
-		"source", "destination", "application", "service", "url_category", "tags",
-		"zero_hit_object_count", "zero_hit_objects",
+		"Name", "Zero Hit Objects",
+		// SOURCE group
+		"Source Zone", "Source Address", "Source User",
+		// DESTINATION group
+		"Destination Zone", "Destination Address",
+		"URL Category", "Tags", "Application", "Service",
+		// Extra metadata not shown in UI but useful for auditing
+		"Zero Hit Object Count", "Rule UUID", "Location", "Action",
 	}
 	rows := make([][]string, 0, len(entries))
 	for _, e := range entries {
@@ -186,22 +234,30 @@ func WriteZeroHitObjectsCSV(path string, entries []ZeroHitObjectsEntry, rules *R
 
 		objects := make([]string, len(e.Objects))
 		for i, o := range e.Objects {
-			objects[i] = fmt.Sprintf("%s (%s)", o.ObjectName, o.ObjectType)
+			// Panorama-sourced objects don't have an ObjectType.
+			if o.ObjectType == "" {
+				objects[i] = o.ObjectName
+			} else {
+				objects[i] = fmt.Sprintf("%s (%s)", o.ObjectName, o.ObjectType)
+			}
 		}
 
 		rows = append(rows, []string{
 			r.Name,
+			strings.Join(objects, "; "),
+			strings.Join(r.From.Member, ";"),
+			strings.Join(r.Source.Member, ";"),
+			strings.Join(r.SourceUser.Member, ";"),
+			strings.Join(r.To.Member, ";"),
+			strings.Join(r.Destination.Member, ";"),
+			strings.Join(r.Category.Member, ";"),
+			strings.Join(r.Tag.Member, ";"),
+			strings.Join(r.Application.Member, ";"),
+			strings.Join(r.Service.Member, ";"),
+			strconv.Itoa(len(e.Objects)),
 			e.RuleUUID,
 			r.Loc,
 			r.Action,
-			strings.Join(r.Source.Member, ";"),
-			strings.Join(r.Destination.Member, ";"),
-			strings.Join(r.Application.Member, ";"),
-			strings.Join(r.Service.Member, ";"),
-			strings.Join(r.Category.Member, ";"),
-			strings.Join(r.Tag.Member, ";"),
-			strconv.Itoa(len(e.Objects)),
-			strings.Join(objects, "; "),
 		})
 	}
 	return writeCSV(path, header, rows)
@@ -252,36 +308,116 @@ func daysSinceCreated(now, createdTime string) string {
 	return strconv.Itoa(days)
 }
 
-// WriteZeroHitPolicyRulesCSV exports the "Zero Hit Policy Rules" view. now
-// is the server's current time (RFC1123, as returned in the
-// unreferencedObjects response's currentTime field -- this endpoint
-// doesn't return its own "now", so the caller passes one from a call made
-// around the same time) and is used for the "days_with_zero_hits" column.
-func WriteZeroHitPolicyRulesCSV(path string, resp *RulesResponse, now string) error {
+// ruleStatus converts the PAN-OS "disabled" field ("yes"/"no") to the
+// human-readable label the SCM UI shows in the Status column.
+func ruleStatus(disabled string) string {
+	switch disabled {
+	case "yes":
+		return "Disabled"
+	case "no":
+		return "Enabled"
+	default:
+		return disabled
+	}
+}
+
+// yesNoLabel turns PAN-OS's "yes"/"no" rule attribute values into the UI's
+// "Yes"/"No" capitalization.
+func yesNoLabel(v string) string {
+	switch v {
+	case "yes":
+		return "Yes"
+	case "no":
+		return "No"
+	default:
+		return v
+	}
+}
+
+// options summarizes the rule attributes the SCM UI groups under its
+// "Options" column: Log Forwarding, Log at Session Start/End, and Disable
+// Server Response Inspection. Only attributes actually present on the rule
+// are included, matching how the API itself omits unset ones.
+func options(r RuleEntry) string {
+	var parts []string
+	if r.LogSetting != "" {
+		parts = append(parts, "Log Forwarding: "+r.LogSetting)
+	}
+	if r.LogStart != "" {
+		parts = append(parts, "Log at Session Start: "+yesNoLabel(r.LogStart))
+	}
+	if r.LogEnd != "" {
+		parts = append(parts, "Log at Session End: "+yesNoLabel(r.LogEnd))
+	}
+	if r.Option.DisableServerResponseInspection != "" {
+		parts = append(parts, "Disable Server Response Inspection: "+yesNoLabel(r.Option.DisableServerResponseInspection))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// panoramaRuleStatus maps the spiffy/v1 unusedPolicies @status field to the
+// label the SCM UI shows in the Status column. Empty string is the default
+// "awaiting review" state, which the UI renders as "Pending Review".
+func panoramaRuleStatus(s string) string {
+	if s == "" {
+		return "Pending Review"
+	}
+	return s
+}
+
+// daysSincePanoramaTime computes whole days (ceiling) between two timestamps
+// both in "2006-01-02 15:04:05" format, as used by spiffy/v1 unusedPolicies
+// @currentTime and @createdTime fields.
+func daysSincePanoramaTime(now, createdTime string) string {
+	const layout = "2006-01-02 15:04:05"
+	cur, err := time.Parse(layout, now)
+	if err != nil {
+		return ""
+	}
+	ts, err := time.Parse(layout, createdTime)
+	if err != nil {
+		return ""
+	}
+	diff := cur.Sub(ts)
+	days := int(diff / (24 * time.Hour))
+	if diff%(24*time.Hour) > 0 {
+		days++
+	}
+	if days < 0 {
+		days = 0
+	}
+	return strconv.Itoa(days)
+}
+
+// WriteUnusedPoliciesCSV exports the "Zero Hit Policy Rules" view for
+// Panorama-sourced data from PanoramaClient.UnusedPolicies.
+func WriteUnusedPoliciesCSV(path string, resp *UnusedPoliciesResponse) error {
+	now := resp.Result.CurrentTime
 	header := []string{
-		"name", "uuid", "location", "rulebase", "days_with_zero_hits", "type", "disabled", "action",
-		"source_zone", "source_address", "source_user", "source_device",
-		"destination_zone", "destination_address", "destination_device",
-		"access_control_allow_apps", "access_control_block_apps",
-		"access_control_allow_url_categories", "access_control_block_url_categories",
-		"application", "service", "url_category", "security_profiles", "tags",
-		"description", "created", "updated",
+		"Name", "Status", "Days with Zero Hits", "Action",
+		"Source Zone", "Source Address", "User", "Source Device",
+		"Subscriber", "Equipment", "Network Container",
+		"Destination Zone", "Destination Address", "Destination Device",
+		"Allow Applications", "Block Applications",
+		"Allow URL Categories", "Block URL Categories",
+		"Application", "Service", "URL Category", "Security Profiles",
+		"Options", "Tag", "Description",
+		"UUID", "Location", "Rulebase", "Type", "Created", "Updated",
 	}
 	rows := make([][]string, 0, len(resp.Result.Result.Entry))
 	for _, r := range resp.Result.Result.Entry {
 		rows = append(rows, []string{
 			r.Name,
-			r.UUID,
-			r.Loc,
-			rulebase(r),
-			daysSinceCreated(now, r.CreatedTime),
-			r.Type,
-			r.Disabled,
+			panoramaRuleStatus(r.ReviewStatus),
+			daysSincePanoramaTime(now, r.CreatedTime),
 			r.Action,
 			strings.Join(r.From.Member, ";"),
 			strings.Join(r.Source.Member, ";"),
 			strings.Join(r.SourceUser.Member, ";"),
 			strings.Join(r.SourceHIP.Member, ";"),
+			strings.Join(r.Subscriber.Member, ";"),
+			strings.Join(r.Equipment.Member, ";"),
+			strings.Join(r.NwContainer.Member, ";"),
 			strings.Join(r.To.Member, ";"),
 			strings.Join(r.Destination.Member, ";"),
 			strings.Join(r.DestinationHIP.Member, ";"),
@@ -293,8 +429,73 @@ func WriteZeroHitPolicyRulesCSV(path string, resp *RulesResponse, now string) er
 			strings.Join(r.Service.Member, ";"),
 			strings.Join(r.Category.Member, ";"),
 			strings.Join(r.ProfileSetting.Group.Member, ";"),
+			options(r),
 			strings.Join(r.Tag.Member, ";"),
 			r.Description,
+			r.UUID,
+			r.Loc,
+			rulebase(r),
+			r.Type,
+			r.CreatedTime,
+			r.UpdatedTime,
+		})
+	}
+	return writeCSV(path, header, rows)
+}
+
+// WriteZeroHitPolicyRulesCSV exports the "Zero Hit Policy Rules" view for
+// Cloud Manager. now is the server's current time (RFC1123, as returned in
+// the unreferencedObjects response's currentTime field) used for "Days with
+// Zero Hits". No Status column -- it is not shown in the Cloud Manager UI.
+func WriteZeroHitPolicyRulesCSV(path string, resp *RulesResponse, now string) error {
+	header := []string{
+		"Name", "Days with Zero Hits", "Action",
+		// Source columns (match UI's "SOURCE" group header)
+		"Source Zone", "Source Address", "User", "Source Device",
+		"Subscriber", "Equipment", "Network Container",
+		// Destination columns (match UI's "DESTINATION" group header)
+		"Destination Zone", "Destination Address", "Destination Device",
+		// SWG / Access Control columns (shown as "Access C..." in UI)
+		"Allow Applications", "Block Applications",
+		"Allow URL Categories", "Block URL Categories",
+		// Remaining UI columns
+		"Application", "Service", "URL Category", "Security Profiles",
+		"Options", "Tag", "Description",
+		// Extra metadata not visible in UI but useful for auditing
+		"UUID", "Location", "Rulebase", "Type", "Disabled", "Created", "Updated",
+	}
+	rows := make([][]string, 0, len(resp.Result.Result.Entry))
+	for _, r := range resp.Result.Result.Entry {
+		rows = append(rows, []string{
+			r.Name,
+			daysSinceCreated(now, r.CreatedTime),
+			r.Action,
+			strings.Join(r.From.Member, ";"),
+			strings.Join(r.Source.Member, ";"),
+			strings.Join(r.SourceUser.Member, ";"),
+			strings.Join(r.SourceHIP.Member, ";"),
+			strings.Join(r.Subscriber.Member, ";"),
+			strings.Join(r.Equipment.Member, ";"),
+			strings.Join(r.NwContainer.Member, ";"),
+			strings.Join(r.To.Member, ";"),
+			strings.Join(r.Destination.Member, ";"),
+			strings.Join(r.DestinationHIP.Member, ";"),
+			strings.Join(r.AllowWebApplication.names(), ";"),
+			strings.Join(r.BlockWebApplication.names(), ";"),
+			strings.Join(r.AllowURLCategory.names(), ";"),
+			strings.Join(r.BlockURLCategory.names(), ";"),
+			strings.Join(r.Application.Member, ";"),
+			strings.Join(r.Service.Member, ";"),
+			strings.Join(r.Category.Member, ";"),
+			strings.Join(r.ProfileSetting.Group.Member, ";"),
+			options(r),
+			strings.Join(r.Tag.Member, ";"),
+			r.Description,
+			r.UUID,
+			r.Loc,
+			rulebase(r),
+			r.Type,
+			r.Disabled,
 			r.CreatedTime,
 			r.UpdatedTime,
 		})
